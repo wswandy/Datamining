@@ -1,0 +1,98 @@
+import re
+import requests
+from bs4 import BeautifulSoup
+import json
+import pandas as pd
+from tabulate import tabulate
+from IPython.display import display, HTML
+
+# to bypass 403 error by adding agent
+HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'}
+
+
+url = requests.get('https://gofood.co.id/jakarta/restaurants/near_me?page=1', headers=HEADERS)
+soup = BeautifulSoup(url.content, 'html5lib')
+
+# using function to use the input and  parse both merchant name and merchant id into the URL
+def get_restaurant_url(merchant_name, merchant_uid):
+    restaurant_name = re.sub(r'\W+', '-', merchant_name.lower())
+    return f"https://gofood.co.id/jakarta/restaurant/{restaurant_name}-{merchant_uid}"
+
+# defining variables
+session = requests.Session()
+merchants_data = []
+merchant_count = 0
+
+# scraping each page and add 1 page,  until the merchant count reaches 30
+page = 1
+while merchant_count < 30:
+    url = f'https://gofood.co.id/jakarta/restaurants/near_me?page={page}'
+    response = session.get(url , headers=HEADERS)
+    soup = BeautifulSoup(response.content, 'html.parser')
+    script_tags = soup.find_all('script', id='__NEXT_DATA__')
+
+    for script_tag in script_tags:
+        merchants_json = json.loads(script_tag.string)
+        merchants = merchants_json['props']['pageProps']['outlets']
+
+        for merchant in merchants:
+            if merchant_count >= 30:
+                break
+            merchant_uid = merchant['core']['uid']
+            merchant_name = merchant['core']['displayName']
+            merchant_location = merchant['core']['location']
+
+            # using the defined function above to combine to get merchant url to look for items for that merchant
+            restaurant_url = get_restaurant_url(merchant_name, merchant_uid)
+
+            responses = session.get(restaurant_url , headers=HEADERS)
+            soups = BeautifulSoup(responses.content, 'html.parser')
+            script_taggs = soups.find_all('script', id='__NEXT_DATA__')
+
+            # set items storage
+            scraped_items = []
+
+            # Loop through and load item script
+            for script_tagg in script_taggs:
+                item_data = script_tagg.string
+                item_json = json.loads(item_data)
+
+                # Extract for 3 items for each merch
+                if len(scraped_items) >= 3:
+                    break
+
+                food_list = item_json['props']['pageProps']['outlet']['catalog']['sections']
+                for foods in food_list:
+                    food_item = foods['items']
+                    for item in food_item:
+                        item_name = item['displayName']
+                        item_currency = item['price']['currencyCode']
+                        item_amount = item['price']['units']
+
+                       # set item details together into a dictionary
+                        item_price = f"{item_currency} {item_amount}"
+                        merchants_data.append({
+                            'Merchant UID': merchant_uid,
+                            'Merchant Name': merchant_name,
+                            'Merchant Location': merchant_location,
+                            'Item Name': item_name,
+                            'Item Price': item_price
+                        })
+
+            merchant_count += 1
+
+    page += 1
+
+# Create a DataFrame from the merchants data
+df = pd.DataFrame(merchants_data)
+
+# Naming the columns
+df = df[['Merchant UID', 'Merchant Name', 'Merchant Location', 'Item Name', 'Item Price']]
+
+# Convert DataFrame to tabular format
+table = tabulate(df, headers='keys', showindex="always")
+
+# Print the tabular format
+##print(table)
+
+display(HTML(df.to_html()))
